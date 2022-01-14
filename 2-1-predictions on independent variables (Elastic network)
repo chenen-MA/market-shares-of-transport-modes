@@ -358,4 +358,19 @@ def results(df_1,dgr,mxl,mxh,ttsz): #time n years, variables m dimention, 规整
 ## only use time as feature to predict relative variables
 y_pred_fnl,para_pred = results(df1,5,0.9,0.95,0.1) # max degree is 5, the degree settle standard is 0.9,test set size is 0.2
 
+hm = 'E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/'
+
+writer = pd.ExcelWriter(hm+'2_1_IV_pred.xlsx')
+y_pred_fnl.to_excel(writer,sheet_name='elastic_network')
+
+para_pred.index=df1.columns
+
+for i in range(len(para_pred.columns)):
+    for j in range(len(para_pred.index)):
+        if isinstance(para_pred.iloc[j,i],str):
+            para_pred.iloc[j,i] = para_pred.iloc[j,i]
+        else:
+            para_pred.iloc[j,i] = round(para_pred.iloc[j,i],3)
+
+print(para_pred)
 
