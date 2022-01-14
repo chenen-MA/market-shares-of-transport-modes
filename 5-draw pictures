@@ -1,0 +1,256 @@
+import pandas as pd
+
+from sklearn.model_selection import train_test_split
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel,ExpSineSquared,RationalQuadratic,WhiteKernel
+from sklearn.gaussian_process import GaussianProcessRegressor
+from itertools import cycle
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import Pipeline
+import warnings
+
+
+
+
+# # # # draw carbon tax
+# import numpy as np
+import matplotlib.pyplot as plt
+
+year = list(np.arange(2013,2051,1))
+print(year)
+year1 = list(np.arange(2013,2021,1))
+print(year1)
+year2 = list(np.arange(2020,2051,1))
+print(year2)
+
+avg_true=[59.4,40,24,16.2,19,22.9,28.6,28.6]
+min_true=[23,17,10,3,7,8,12,12]
+max_true = [81,53,55,56,58,74,81,81]
+
+df1 = pd.DataFrame([avg_true,min_true,max_true],columns=year1,index=['avg','min','max']).T
+print(df1)
+
+year0 = [2020,2025,2030,2050]
+avg_fed = [49,71,93,167]
+t_fed = [20,25,28,30]
+e_fed = [49,87,100,200]
+
+df2 = pd.DataFrame([avg_fed,t_fed,e_fed],columns=year0,index=['avg_fed','20%','80%']).T
+print(df2)
+
+
+plt.figure(figsize=(10,5))
+plt.plot(df1.index, df1.iloc[:,0], 'black',label='average price')
+x = [2013,2016,2019]
+y = [59.4,16.2,28.6]
+plt.scatter(x,y)
+# for i in range(len(x)):
+#     plt.annotate(y[i], xy = (x[i], y[i]), xytext = (x[i]+0.15, y[i]+0.15))
+plt.fill_between(df1.index, df1.iloc[:,1], df1.iloc[:,2],facecolor='blue', edgecolor='white',alpha=0.35) #透明度
+
+plt.plot(df2.index, df2.iloc[:,0], 'k--',label='Average survey feedback price')
+x1 = [2020,2025,2030,2035,2050]
+y1 = [49,71,93,112,167]
+plt.scatter(x1,y1)
+for i in range(len(x1)):
+    plt.annotate(y1[i], xy = (x1[i], y1[i]), xytext = (x1[i]+0.1, y1[i]-10),size=13)
+plt.fill_between(df2.index, df2.iloc[:,1], df2.iloc[:,2],facecolor='blue', edgecolor='white',alpha=0.15,label='20%-80% forecast quantile') #透明度
+
+plt.annotate(' ',xy=(year1[0],88),xytext =(year1[-1], 88),arrowprops=dict(facecolor='red',alpha=0.4))
+plt.annotate('(Actual price range)', xy=(2012,100), xytext =(2012, 100),size=12)
+plt.annotate('Pilot carbon markets', xy=(2012,120), xytext =(2012, 120),size=14)
+
+plt.annotate(' ',xy=(2030,15),xytext =(2020,15),arrowprops=dict(facecolor='blue',alpha=0.25))
+plt.annotate(' National Carbon Market', xy=(2030,15), xytext =(2030,15),size=14)
+
+plt.xlabel('Year',size=14)
+plt.ylabel('Carbon price (CNY/ton)',size=14)
+plt.title('Respondents estimates of carbon prices in the national carbon market',size=14)
+
+plt.legend(loc = 'upper left')
+plt.savefig('E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/IO_DATA/carbon price.jpg')
+
+plt.show()
+
+
+
+# # # # draw medium daaset
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+hm = 'E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/'
+
+mdf_p0 = pd.read_excel(hm+'6_medium_dataset_operation.xlsx', sheet_name='calc_EN')
+mdf_o0 = pd.read_excel(hm+'6_medium_dataset_operation.xlsx', sheet_name='calc_org')
+mdf_p1 = mdf_p0.iloc[32:,:9] #2010-2040
+mdf_o1 = mdf_o0.iloc[:,:9] #1978-2020
+
+mdf_p1.index = mdf_p1.iloc[:,0]
+mdf_p1 = mdf_p1.iloc[:,1:]
+mdf_o1.index = mdf_o1.iloc[:,0]
+mdf_o1 = mdf_o1.iloc[:,1:]
+
+# print(mdf_p1)
+# print(mdf_o1)
+name = mdf_o1.columns
+print(name)
+
+fig = plt.figure(figsize=(18,6))
+fig.suptitle('Prediction on market value of transport services',size=20)
+# plt.subplot(224)
+for i in range(len(name)):
+    
+    loc = '131'
+    plt.subplot(loc)
+    color = ['b','r','orange','k']
+    plt.title('transport service',size=19)
+    plt.xlabel('year',size=17)            
+    plt.ylabel('value',size=17)
+    plt.tick_params(labelsize=15)
+    plt.rcParams.update({'font.size':15})
+    if i in (0,1,2,3):
+        og = list(mdf_o1.iloc[:,i])
+        prd = list(mdf_p1.iloc[:,i])
+        plt.plot(mdf_o1.index,og,color[i],label=name[i]+'-original',linewidth=3)
+        plt.plot(mdf_p1.index,prd,color[i],label=name[i]+'-prediction',linestyle=":",linewidth=2)
+    plt.legend()
+    
+    loc = '132'
+    plt.subplot(loc)
+    color = ['b','r','orange','k']
+    plt.title('road service',size=19)
+    plt.xlabel('year',size=17)            
+#     plt.ylabel('value',size=17)
+    plt.tick_params(labelsize=15)
+    plt.rcParams.update({'font.size':15})
+    if i in (4,5):
+        og = list(mdf_o1.iloc[:,i])
+        prd = list(mdf_p1.iloc[:,i])
+        plt.plot(mdf_o1.index,og,color[i-4],label=name[i]+'-original',linewidth=3)
+        plt.plot(mdf_p1.index,prd,color[i-4],label=name[i]+'-prediction',linestyle=":",linewidth=2)
+    plt.legend()
+    
+    loc = '133'
+    plt.subplot(loc)
+    color = ['b','r','orange','k']
+    plt.title('rail service',size=19)
+    plt.xlabel('year',size=17)            
+#     plt.ylabel('value',size=17)
+    plt.tick_params(labelsize=15)
+    plt.rcParams.update({'font.size':15})
+    if i in (6,7):
+        og = list(mdf_o1.iloc[:,i])
+        prd = list(mdf_p1.iloc[:,i])
+        plt.plot(mdf_o1.index,og,color[i-6],label=name[i]+'-original',linewidth=3)
+        plt.plot(mdf_p1.index,prd,color[i-6],label=name[i]+'-prediction',linestyle=":",linewidth=2)
+    plt.legend()
+
+plt.savefig('E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/pics/transport1.png')
+plt.show()
+
+
+
+
+# # # # draw small dataset
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn
+from collections import OrderedDict
+import matplotlib as mpl
+from cycler import cycler
+
+hm = 'E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/'
+
+sp_df_p0 = pd.read_excel(hm+'6_1_small_dataset_operation.xlsx', sheet_name='calc_pub_SVR')
+sp_df_o0 = pd.read_excel(hm+'6_1_small_dataset_operation.xlsx', sheet_name='calc_pub_org')
+
+# sp_df_p1 = sp_df_p0.iloc[15:,:] #2015-2040
+sp_df_p1 = sp_df_p0.iloc[20:,:] #2020-2040
+sp_df_o1 = sp_df_o0.iloc[:,:] #2000-2020
+sp_df_p1.index = sp_df_p1.iloc[:,0]
+sp_df_p1 = sp_df_p1.iloc[:,1:]
+sp_df_o1.index = sp_df_o1.iloc[:,0]
+sp_df_o1 = sp_df_o1.iloc[:,1:]
+name_p = sp_df_p1.columns
+# print(sp_df_p1)
+# print(sp_df_o1)
+# print(name_p)
+
+sn_df_p0 = pd.read_excel(hm+'6_1_small_dataset_operation.xlsx', sheet_name='calc_new_SVR')
+sn_df_o0 = pd.read_excel(hm+'6_1_small_dataset_operation.xlsx', sheet_name='calc_new_org')
+
+sn_df_p1 = sn_df_p0.iloc[14:,:] #2015-2040
+sn_df_o1 = sn_df_o0.iloc[:,:] #2000-2020
+sn_df_p1.index = sn_df_p1.iloc[:,0]
+sn_df_p1 = sn_df_p1.iloc[:,1:]
+sn_df_o1.index = sn_df_o1.iloc[:,0]
+sn_df_o1 = sn_df_o1.iloc[:,1:]
+name_n = sn_df_p1.columns
+
+print(sn_df_p1)
+print(sn_df_o1)
+# print(name_n)
+
+fig = plt.figure(figsize=(18,6))
+fig.suptitle('Prediction on market value of road services',size=20)
+
+mpl.rcParams['axes.prop_cycle'] = cycler(color=['steelblue', 'deepskyblue','lavender', 'skyblue', 'cyan','lightblue','darkblue', 'k'])
+color=['C0','C1', 'C2', 'C3', 'C4', 'C5', 'C6']
+
+
+loc = '121'
+plt.subplot(loc)
+plt.title('public road service',size=19)
+plt.xlabel('year',size=17)            
+plt.ylabel('value',size=17)
+plt.tick_params(labelsize=15)
+plt.rcParams.update({'font.size':15})
+    
+name = sp_df_o1.columns
+x_org_pb = sp_df_o1.index
+yr  = [0 for i in range(len(x_org_pb))]
+x_prd_pb = sp_df_p1.index
+yp  = [0 for i in range(len(x_prd_pb))]
+
+for i in range(len(sp_df_o1.T)):
+    y0 = yr
+    yr = y0 + sp_df_o1.iloc[:,i]
+    plt.fill_between(x_org_pb, y0 , yr , facecolor=color[i], label =name[i], interpolate=True, alpha=0.9) #
+    
+    y1 = yp
+    yp = y1 + sp_df_p1.iloc[:,i]
+    plt.plot(x_prd_pb, yp, ':')
+    plt.fill_between(x_prd_pb, y1 , yp , facecolor=color[i], interpolate=True,alpha=0.5) #
+plt.legend(loc=2) #图例
+
+########################################
+loc = '122'
+plt.subplot(loc)
+plt.title('other road service',size=19)
+plt.xlabel('year',size=17)            
+plt.ylabel('value',size=17)
+plt.tick_params(labelsize=15)
+plt.rcParams.update({'font.size':15})
+    
+name = sn_df_o1.columns
+x_org_sn = sn_df_o1.index
+yr  = [0 for i in range(len(x_org_sn))]
+x_prd_sn = sn_df_p1.index
+yp  = [0 for i in range(len(x_prd_sn))]
+
+for i in range(len(sn_df_o1.T)):
+    y0 = yr
+    yr = y0 + sn_df_o1.iloc[:,i]
+    plt.fill_between(x_org_sn, y0 , yr , facecolor=color[i], label =name[i], interpolate=True, alpha=0.9) #
+    
+    y1 = yp
+    yp = y1 + sn_df_p1.iloc[:,i]
+    plt.plot(x_prd_sn, yp, ':')
+    plt.fill_between(x_prd_sn, y1 , yp , facecolor=color[i], interpolate=True,alpha=0.5) #
+
+plt.legend(loc=2) #图例
+
+plt.savefig('E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/pics/transport2.png')
+plt.show()
+
