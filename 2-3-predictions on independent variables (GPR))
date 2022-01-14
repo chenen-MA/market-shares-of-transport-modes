@@ -1,0 +1,235 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel,ExpSineSquared,RationalQuadratic,WhiteKernel
+from sklearn.gaussian_process import GaussianProcessRegressor
+from itertools import cycle
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import Pipeline
+import warnings
+
+hm = 'E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/'
+
+df1 = pd.read_excel(hm+'2_0_PCA_result.xlsx')
+df1.index = df1.iloc[:,0]
+df1.columns = ['year','saving','labor','other_macro','pop_env_ene']
+df1 = df1.iloc[:,1:] # relative variables
+
+def slct(x,y,z,mx):
+    # 1) design kernel and select the best parameters, 目标是最大化边际似然函数
+    ##粗粒度筛选
+    inter = 50
+    inter2 = 5
+    count = 0
+    
+    while count<2:
+        C = list(np.arange(0,mx+inter,inter))
+        L = list(np.arange(0,mx+inter,inter))
+        W = list(np.arange(0,mx+inter,inter))
+        RL=list(np.arange(0,5+inter,inter2))
+        RA=list(np.arange(0,5+inter,inter2))
+        para = []
+        CLW = []
+        MG = []  ###边际似然函数
+        ERR = []  ###方差
+        for rl in RL:
+            for ra in RA:
+                for c in C:
+                    for l in L:
+                        for wn in W:
+        #                     kernel = ConstantKernel(constant_value=c) * RBF(length_scale=l) + WhiteKernel(noise_level=wn)
+                            kernel = ConstantKernel(constant_value=c) * RBF(length_scale=l)+WhiteKernel(noise_level=wn)+ RationalQuadratic(length_scale=rl, alpha=ra)
+                            gp = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=5)
+                            gp.fit(x, y)  # 训练函数
+                            means, sigmas = gp.predict(z, return_std=True)
+                            ERR.append(np.mean(sigmas))
+#                             cbst = gp.kernel_.k1.k1.constant_value
+#                             lbst = gp.kernel_.k1.k2.length_scale
+#                             wbst = gp.kernel_.k2.noise_level
+                            
+                            cbst = gp.kernel_.k1.k1.k1.constant_value
+                            lbst = gp.kernel_.k1.k1.k2.length_scale
+                            wbst = gp.kernel_.k1.k2.noise_level
+                            rlbst = gp.kernel_.k2.length_scale
+                            rabst = gp.kernel_.k2.alpha
+                            
+                            para.append([cbst,lbst,wbst,rlbst,rabst])
+                            CLW.append([c,l,wn,rl,ra])
+        #                     lgmg = gp.log_marginal_likelihood(gp.kernel_.theta, eval_gradient = True)[0]
+                            lgmg = gp.log_marginal_likelihood(gp.kernel_.theta, clone_kernel=False)
+                            MG.append(lgmg)
+        
+        ind = int(ERR.index(min(ERR)))
+        bst = para[ind]
+        print('sigma and length scale and noise level:',bst)  # 得到最佳超参数
+        clw = CLW[ind]
+        print('C & L & W:',clw)  # 得到最佳超参数
+        
+        count=count+1
+        print(count)
+        inter = int(inter/2)
+        inter2 = int(inter2/2)
+        print(inter,inter2)
+        
+        return bst,clw
+
+
+
+# 1.高位时间特征 2.核函数设计，而不是更改参数 3.模型评价指标
+def GPR(x,y,z,full,c,l,wn,rl,ra):
+#     2）使用超参数得到最终核函数，使用全数据集拟合
+    kernel = ConstantKernel(constant_value=c) * RBF(length_scale=l)+WhiteKernel(noise_level=wn)+ RationalQuadratic(length_scale=rl, alpha=ra)
+    gp = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=5)
+    gp.fit(x, y)  # 训练函数
+    # # use full dataset to do predictions
+    numb = len(pd.DataFrame(z).T)
+    print('待预测数据维数：',numb)
+    if numb==1:
+        z = np.array(z.ravel()).reshape(1, -1).T
+    else:
+        z = np.array(z)
+
+    means, sigmas = gp.predict(z, return_std=True)
+    print('\n means, sigmas:')
+    print(np.shape(means),np.shape(sigmas))
+    print('平均方差：',np.mean(sigmas))
+    Smp = 8
+    samples = gp.sample_y(z, Smp).T  #根据已有的系数生成y的sample
+    print('samples shape:',np.shape(samples))
+    print(gp.get_params())
+    
+    c = gp.kernel_.k1.k1.k1.constant_value
+    l = gp.kernel_.k1.k1.k2.length_scale
+    wn = gp.kernel_.k1.k2.noise_level
+    rl = gp.kernel_.k2.length_scale
+    ra = gp.kernel_.k2.alpha
+    print('parameters:',c,l,wn,rl,ra)
+    
+    means_full, sigmas_full = gp.predict(full, return_std=True)
+
+    colors = cycle(['g', 'b', 'k', 'y', 'c', 'r', 'm'])
+    # plotting
+    if numb==1:
+        plt.figure()
+        plt.title("sigma_f=%.1f l=%.1f w=%.1f rl=%.1f ra=%.1f" % (c , l, wn, rl, ra))
+        plt.plot(x, y, 'black')
+        plt.errorbar(z, means, yerr=sigmas, ecolor='g', linewidth=1.5, elinewidth=0.5, alpha=0.75)
+        plt.scatter(full,means_full)
+        for sample, cl in zip(samples, colors):
+            plt.plot(z, sample.T, cl, label=str(cl))
+        plt.legend()
+        plt.show()
+    else:
+        plt.figure()
+#         plt.title("sigma_f=%.1f l=%.1f" % (c , l))
+        plt.title("sigma_f=%.1f l=%.1f w=%.1f rl=%.1f ra=%.1f" % (c , l, wn, rl, ra))
+        plt.plot(x[:,0], y, 'black')
+#         plt.errorbar(z, means, yerr=sigmas, ecolor='g', linewidth=1.5, elinewidth=0.5, alpha=0.75)
+        plt.scatter(full,means_full)
+        for sample, cl in zip(samples, colors):
+            plt.plot(z[:,0], sample.T, cl, label=str(cl))
+        plt.legend()
+        plt.show()
+        
+    return means_full
+
+
+
+warnings.filterwarnings("ignore")
+
+y_pred_fnl = []
+for i in range(len(df1.T)):
+# for i in range(1):
+    print(i)
+    print('-----------------------------------------------------------------------------------------------------------')
+    print('following 25 are the same datasets')
+    x = np.array(df1.index).reshape(1, -1).T
+    y = np.array(df1.iloc[:,i])
+    
+    #一维输入
+    print('1D---使用二维输入方差显著变大，使用原参数比最优参数方差大---------------------------------------------------')
+    x_new = (x-min(x))/(max(x)-min(x))
+    y_new = (y-min(y))/(max(y)-min(y))
+    x_test = list(np.arange(2020,2041,1))
+    x_test_new = (x_test-min(x))/(max(x)-min(x))
+    x_full = list(np.arange(int(min(x)),2041,1))
+    x_full_new = (x_full-min(x))/(max(x)-min(x))
+    
+    x_new = np.array(round(pd.DataFrame(x_new),9))
+    y_new = np.array(round(pd.DataFrame(y_new),9))
+    x_test_new = np.array(round(pd.DataFrame(x_test_new),9))
+    x_full_new = np.array(round(pd.DataFrame(x_full_new),9))
+    print(np.shape(x_new),np.shape(y_new),np.shape(x_test_new),np.shape(x_full_new))
+    
+    bst,clw = slct(x_new,y_new,x_test_new,50)    # search for best parameters
+    y_pred = GPR(x_new,y_new,x_test_new,x_full_new,bst[0],bst[1],bst[2],bst[3],bst[4])
+    y_pred = y_pred * (max(y)-min(y)) + min(y)
+    y_pred_fnl.append(y_pred)
+
+
+y_pred3 = []
+for i in range(len(y_pred_fnl)):
+    y = list(y_pred_fnl[i].flatten())
+    y_pred3.append(y)
+y_pred3 = pd.DataFrame(np.array(y_pred3).T, index = x_full, columns=list(df1.columns))
+
+# 二维输入方差显著变大，使用原参数方差比选出的最优差
+
+
+
+y_pred3.to_excel(writer,sheet_name='GPR')
+
+writer.save()
+writer.close()
+
+
+
+
+##### COMBINATION, use the the result of 2-1, 2-2 and 2-3
+df1 = pd.read_excel(hm+'2_0_PCA_result.xlsx')
+pred1 = pd.read_excel(hm+'2_1_IV_pred.xlsx',sheet_name='elastic_network')
+pred2 = pd.read_excel(hm+'2_1_IV_pred.xlsx',sheet_name='SVR')
+pred3 = pd.read_excel(hm+'2_1_IV_pred.xlsx',sheet_name='GPR')
+# pred1 = pd.read_excel(hm+'3_2_PCA_NN.xlsx')
+# pred2 = pd.read_excel(hm+'3_2_PCA_SVR.xlsx')
+# pred3 = pd.read_excel(hm+'3_2_PCA_GPR.xlsx')
+print(pred1,pred2,pred3)
+
+x = pred1.iloc[:,0]
+x0 = df1.iloc[:,0]
+name = list(pred1.columns)[1:]
+print(name)
+
+y_pred_comb = []
+fig = plt.figure(figsize=(18,9))
+fig.suptitle('Prediction Performance on independent variables(IVs)',size=20)
+# plt.subplot(224)
+for i in range(len(name)):
+    loc = '22'+str(i)
+    plt.subplot(loc)
+    og = list(df1.iloc[:,i+1])
+    y1 = list(pred1.iloc[:,i+1])
+    y2 = list(pred2.iloc[:,i+1])
+    y3 = list(pred3.iloc[:,i+1])
+    func = lambda a,b,c:(a+b+c)/3
+    y4 = list(map(func,pred1.iloc[:,i+1],pred2.iloc[:,i+1],pred3.iloc[:,i+1]))
+    y_pred_comb.append(y4)
+
+    plt.title(name[i],size=19)
+    if i+1 in (1,4):
+        plt.xlabel('year',size=17)            
+    plt.ylabel('value',size=17)
+    plt.tick_params(labelsize=15)
+    plt.rcParams.update({'font.size':15})
+#     plt.plot(x0,og,'black',label='original',linewidth=2)
+    plt.scatter(x0,og,label='original')
+    plt.plot(x,y4,'red',label='Combined Result',linewidth=3)
+    plt.plot(x,y1,'b',label='Elastic_Network',linestyle=":",linewidth=2)
+    plt.plot(x,y2,'orange',label='SVR method',linestyle=":",linewidth=2)
+    plt.plot(x,y3,'green',label='GPR method',linestyle=":",linewidth=2)
+
+    plt.legend()
+
+plt.savefig('E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/pics/independent variable prediciton.png')
+plt.show()
