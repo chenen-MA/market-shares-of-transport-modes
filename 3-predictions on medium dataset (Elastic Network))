@@ -1,0 +1,634 @@
+import numpy as np
+from scipy import stats
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+#寻找最优参数
+from sklearn.linear_model import ElasticNet
+from sklearn.linear_model import Ridge
+from sklearn.metrics import r2_score
+from sklearn import linear_model
+
+# # 导入预测好的相关变量，时间项和待预测的变量
+import pandas as pd
+
+hm = 'E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/'
+
+# y_rl = pd.read_excel(hm+'3_2_PCA_NN.xlsx')
+y_rl = pd.read_excel(hm+'2_1_IV_pred.xlsx',sheet_name='combine')
+y_rl_dx = list(y_rl.iloc[:,0])
+y_rl = pd.DataFrame(np.array(y_rl.iloc[:,1:]),index=y_rl_dx,columns=y_rl.columns[1:])
+
+# df2 = pd.read_excel(hm+'3_1_longtimeseries.xlsx')
+df2 = pd.read_excel(hm+'4_interpolate_dataset.xlsx',sheet_name='medium0')
+df2.index = df2.iloc[:,0]
+df2 = df2.iloc[:,1:]
+print(df2)
+print(y_rl)
+
+
+# # # 建立函数，使得输入的时间项在标准化后可以转化为n次时间特征，并标准化待预测值
+#将时间标准化后转变为n次特征，使用到2040的时间序列, 将y标准化处理
+def trans(dx,dy,n,deg): #dx:current time series, y: current y value, n:target year, deg:transform to polynomial
+    bs = np.min(list(dx))
+    lgth = len(dx)  # 实际使用的训练年份年数
+    year = np.array(range(bs,n+1))
+#     print(lgth)
+    poly_scaler = Pipeline([
+                ('std_scaler',StandardScaler()),
+                ('poly_features',PolynomialFeatures(degree=deg,include_bias=True))
+            ])
+    scaler = StandardScaler()
+    
+    x=poly_scaler.fit_transform(year.reshape(-1,1))
+    x = pd.DataFrame(list(map(list,x)))
+    x.loc[:,0]=1
+    x = np.array(x)
+    xt = x[:lgth]
+
+    yt=scaler.fit_transform(np.array(dy).reshape(-1,1)).reshape(1,-1)[0]
+    y_mean = np.mean(dy)
+    y_std = np.std(dy)
+    
+    return xt,yt,x,year,y_mean,y_std
+# xt 为历史有y的n维时间特征，yt为目标变量,x为包括到预测年份的所有n维时间特征，
+# year为到预测年份的所有年份，y_mean和y_std室为了将预测y去标准化
+
+
+
+# # # 通过使用n次项的时间特征，通过线性拟合，选择合适的时间项次数（R2>=0.7）和最优的时间项次数(R2>=0.9)
+def bstdg(dx,dy,n=5,mxl=0.6,mxh=0.9):
+    deg = [i for i in range(1,n+1)]
+    model = linear_model.LinearRegression()
+    R = []
+    M=[]
+    for i in deg:
+        x1_t,y1_t,x_t,year_t,y_mean_t,y_std_t = trans(dx,dy,2040,i)
+        model.fit(x1_t,y1_t)
+        y_pred = model.predict(x1_t)
+        R.append(r2_score(np.float64(y_pred),np.float64(y1_t)))
+        M.append(mean_squared_error(np.float64(y_pred),np.float64(y1_t)))
+
+    # 选择合适的时间次数，使用第一个使得函数拟合达到mxl以上的项数，认为是比较合适的时间项数，若在最大项数约束下仍未达到标准，则使用2次
+    for i in R:
+        if i >=mxl:
+            deg_fn = R.index(i)+1
+            break
+        else:
+            deg_fn = 2
+    print('suitable degree:',deg_fn)
+    # 选择最优的时间次数，可能是过拟合的情况，如果到mxh以上，选用这个次数，否则使用最大项数约束
+    for i in R:
+        if i>=mxh:
+            deg_bst = R.index(i)+1
+        else:
+            deg_bst = n
+    print('best degree:',deg_bst)
+    
+    R2 = R[deg_fn-1]
+    MSE = M[deg_fn-1]
+    print('suitable R2 in degree selection:',R2)
+    print('suitable MSE in degree selection:',MSE)
+    
+    x1_t,y1_t,x_t,year_t,y_mean_t,y_std_t = trans(dx,dy,2040,deg_fn)
+    model.fit(x1_t,y1_t)
+    y_pred = model.predict(x_t)*y_std_t+y_mean_t
+    para = model.coef_
+    inter = model.intercept_
+    para[0]=inter
+    
+    return y_pred,para,R2,year_t,MSE,deg_fn,deg_bst
+    
+
+
+# # # 设置批量梯度下降的弹性网络方法，如果特征项中时间特征次数<4且考虑趋势问题时，使用一种成本函数；否则使用一般的成本函数
+# 批量梯度下降求解弹性网络的参数,梯度下降寻找全局最优成本函数，成本函数为弹性网络成本函数
+def BGD_EE_trend(input_data,target_data,sut_d,trend,r,alp): #sut_d 为使用的时间项次数, trend=0时使用一般的权重，否则使用趋势权重
+    loop_max = 10000 #最大迭代次数
+    epsilon = 1e-4  #容差
+    alpha = 0.001 #步长
+
+    m = len(input_data) #实例个数
+    n = len(input_data.T) #特征个数,包括截距
+    np.random.seed(0)
+    theta = np.random.randn(n) # 随机化初始权重，就是每个特征的系数
+
+    diff=0
+    error=np.zeros(n)
+    count=0
+    finish=0
+    # 如果最优时间项的次数在3次及以下时，且使用trend项时，认为是存在明显的趋势的，使用包含了趋势的成本函数，否则使用一般的EE成本函数
+    if sut_d<4 and trend==1:
+#         # 全历史时期的趋势
+#         w = np.array([i*2/(1+len(target_data)+1) for i in range(1,len(target_data)+1)]).reshape(-1,1)
+        #最近15年权重变化的趋势，其他更早的时间无趋势
+        m = len(target_data)
+        w1 = [m/(m+125) for i in range(m)]
+        inner = [i for i in range(m-14,m+1)]
+        w2 = [(16-(m-i+1))*m/(m+125) if i in inner else 0 for i in range(m+1)][1:]
+        func = lambda a,b:a+b
+        w = np.array(list(map(func,w1,w2))).reshape(-1,1)
+    else:
+        w = np.array([1 for i in range(1,len(target_data)+1)]).reshape(-1,1)
+    
+    while count<loop_max:  #迭代循环
+        count +=1
+        # cost function, we need the diffentiated cost function
+        e = np.array(input_data.dot(theta)-target_data).reshape(-1,1)
+        func = lambda x,y:x*y
+        ms1 = list(map(list,list(map(func,w,e))))
+        ms = list(np.array((2/m)*input_data.T.dot(ms1)).flatten())
+
+        ab = []
+        for i in range(len(theta)): #系数的正负号
+            if theta[i]>=0:
+                ab.append(1*alp*r)
+            else:
+                ab.append(-1*alp*r)
+        pw = [x*alp*(1-r) for x in theta]
+
+        func2 = lambda a,b,c:a+b+c
+        v = np.array(list(map(func2,ms,ab,pw)))
+
+        theta = theta-alpha*v
+        ep=np.linalg.norm(theta-error)  
+
+        if ep<epsilon:
+            finish=1
+            break
+        else: 
+            error = theta 
+#             finish=0  
+        
+    y_predict = np.dot(input_data,theta)
+    MSE = mean_squared_error(y_predict,target_data)
+    R2 = r2_score(np.float64(y_predict),np.float64(target_data))
+
+    return list(theta), MSE, R2, y_predict
+
+
+
+
+# # # 使用不考虑趋势问题的BGD_EE方法，在保证R2最大化的约束下，寻找最优的alpha和r作为成本函数系数, 再使用alpha和r进行测试集和训练集的MSE计算
+def best_test(x_bt,y_bt,sut_d,tstsz=0.1):#设置testsize, sut_d用于做判断，没有设计计算，可为0
+
+    ##粗粒度筛选
+    inter = 0.2
+    alpha = np.arange(inter,1+inter,inter)
+    r = np.arange(0,1+inter,inter)
+
+    v = []
+    loc = []
+    av,rv,R=[],[],[]
+    for i in range(len(alpha)):
+        for j in range(len(r)):
+            rl = round(float(r[j]),3)
+            al = round(float(alpha[i]),3)
+            av.append(al)
+            rv.append(rl)
+            theta, MSE, R2, y_predict = BGD_EE_trend(x_bt,y_bt,sut_d,0,r=rl,alp=al) # trend=0 使用一般的成本函数
+            R.append(R2)
+            loc.append([i,j])
+    
+    ind = int(R.index(max(R)))
+    abst = loc[ind][0]
+    rbst = loc[ind][1]
+#     print('best location of a and r',abst,rbst)
+    abstv = round(float(alpha[abst]),3)
+    rbstv = round(float(r[rbst]),3)
+
+    #得到细粒度的列表
+    inter2=0.05
+    func = lambda a:round(float(a),2)
+    if abstv==round(min(alpha),2):
+        avmx = round(float(alpha[abst+1]),3)
+        alpha2 = list(map(func,np.arange(inter2,avmx,inter2)))
+#         print('min',alpha2)
+    elif abstv==round(max(alpha),2):
+        avmi = round(float(alpha[abst-1]),3)
+        alpha2 = list(map(func,np.arange(avmi,abstv,inter2)))
+#         print('max',alpha2)
+    else:
+        avmi = round(float(alpha[abst-1]),3)
+        avmx = round(float(alpha[abst+1]),3)
+        alpha2 = list(map(func,np.arange(avmi,1+inter2,inter2)))
+#         print('mid',alpha2)
+
+    if rbstv==round(min(r),2):
+        rvmx = round(float(r[rbst+1]),3)
+        r2 = list(map(func,np.arange(inter2,rvmx,inter2)))
+#         print('min',r2)
+    elif rbstv==round(max(r),2):
+        rvmi = round(float(r[rbst-1]),3)
+        r2 = list(map(func,np.arange(rvmi,1+inter2,inter2)))
+#         print('max',r2)
+    else:
+        rvmi = round(float(r[rbst-1]),2)
+        rvmx = round(float(r[rbst+1]),2)
+        r2 = list(map(func,np.arange(rvmi,rvmx,inter2)))
+#         print('mid',r2)  
+    
+    v = []
+    loc = []
+    av,rv,R,tht=[],[],[],[]
+    for i in range(len(alpha2)):
+        for j in range(len(r2)):
+            rl = round(float(r2[j]),3)
+            al = round(float(alpha2[i]),3)
+            av.append(al)
+            rv.append(rl)
+            theta, MSE, R2, y_predict = BGD_EE_trend(x_bt,y_bt,sut_d,0,r=rl,alp=al) #使用一般的成本函数
+            R.append(R2)
+            tht.append(theta)
+            loc.append([i,j])
+
+    ind = int(R.index(max(R)))
+    av = alpha2[loc[ind][0]]
+    rv = r2[loc[ind][1]]
+    r2_fn = R[ind]
+    print('suitable R2 in a&r selection:',r2_fn)
+    tht = tht[ind:ind+1][0]
+    
+    # 测试集和训练集
+    x_train,x_val,y_train,y_val = train_test_split(x_bt,y_bt,test_size=tstsz)
+    theta, MSE_train, R2, y_predict = BGD_EE_trend(x_train,y_train,sut_d,0,rv,av) #使用一般的成本函数
+    MSE_test = mean_squared_error(np.dot(x_val,np.array(theta).T),y_val)
+    
+    return av,rv,tht,r2_fn,MSE_train,MSE_test
+
+
+
+
+# # # 判断过拟合和欠拟合问题，通过更改输入特征来优化模型
+y_rl = pd.read_excel(hm+'2_1_IV_pred.xlsx',sheet_name='combine')
+y_rl_dx = list(y_rl.iloc[:,0])
+y_rl = pd.DataFrame(np.array(y_rl.iloc[:,1:]),index=y_rl_dx,columns=y_rl.columns[1:])
+
+# 输入原始数据，模块会标准化
+def selection(dx_tst,dy_tst,y_rl,dgr,miR,mxR,tsz):
+    # 线性拟合寻找最优和次优时间次数
+    print('\n寻找最优和次优时间项次数')
+    y_pred_lr,para_lr,R2_lr,year_lr,MSE_lr,degree,deg_bst = bstdg(dx_tst,dy_tst,dgr,miR,mxR) # linear regression
+
+    # 规整化时间特征和相关变量,标准化
+    rl = y_rl
+    ix = rl.index
+    name = list(rl.columns)
+    scaler = StandardScaler()
+    rl=scaler.fit_transform(np.array(rl))
+    rl=pd.DataFrame(rl,index=ix,columns=name)
+
+    # make sure dx has same length with relative (len(dx)>len(rl))
+    mx = max(dx_tst)
+    mi = min(dx_tst)
+    mxrl = max(ix)
+    mirl = min(ix)
+    # mxrl 显然最大，需要缩短rl
+    # 判断mi 与 mirl
+    if mi>mirl:
+        rlh = rl.loc[mi:mx,:]
+        rlf = rl.loc[mx+1:,:]
+        rl_new = rl.loc[mi:,:]
+    else:
+        rlh = rl.loc[:mx,:]
+        rlf = rl.loc[mx+1:,:]
+        rl_new = rl
+        dx_tst = list(dx_tst)
+        n = dx_tst.index(mirl)
+        dx_tst = dx_tst[n:]
+        dy_tst = dy_tst[n:]
+        year = year_lr[n:]
+
+    x_new0,y_new,x_full0,year,y_mean_new,y_std_new = trans(dx_tst,dy_tst,2040,degree)  #使用次优次数转化时间项
+    # 将时间特征与其他相关特征融合，其他在前，时间在后
+    x_new = np.array(pd.concat([rlh,pd.DataFrame(x_new0,index=rlh.index)],axis=1))
+    x_full = np.array(pd.concat([rl_new,pd.DataFrame(x_full0,index=rl_new.index)],axis=1))
+    print('融合最合适的时间特征和相关变量特征')
+    print(len(x_new),len(y_new))
+    print(len(x_full))
+    
+    #模型部分
+    #使用最合适的次数寻找最优BGD_EE系数
+    print('使用合适的时间次数及相关变量寻找最优BGD_EE系数和测试集训练集的MSE')
+    av,rv,tht,r2_bgd,MSE_train,MSE_test = best_test(x_new,y_new,degree,tstsz=tsz) 
+    print(av,rv,tht,r2_bgd,MSE_train,MSE_test)
+    
+    def dt(MSE_train,MSE_test,r2_bgd):
+        #判断模型效果，欠拟合，过拟合，可接受或者不适用
+        if (MSE_train + MSE_test)/2<=0.06 and r2_bgd>=0.6:
+            print('acceptable model')
+            dtr = 1
+        else:
+            if MSE_train > MSE_test and (MSE_train-MSE_test)>=MSE_test: #MSE存在差距
+                if r2_bgd>0.9: #过拟合 0.9的效果很好
+                    print('overfitting')
+                    dtr = 2
+                elif 0.4<=r2_bgd<=0.9:
+                    print('bad generalizing ability')
+                    dtr = -1
+                else:
+                    print('bad model')
+                    dtr = 0
+            elif MSE_train > MSE_test and (MSE_train-MSE_test)< MSE_test: #泛化能力尚可
+                if r2_bgd>=0.4: 
+                    print('acceptable model')
+                    dtr = 1
+                else:
+                    print('bad model')
+                    dtr = 0
+            elif MSE_train <= MSE_test and (MSE_test-MSE_train)>=MSE_train:#MSE存在差距
+                if 0.4<=r2_bgd<0.7: #欠拟合
+                    print('underfitting')
+                    dtr = -2
+                elif r2_bgd>=0.7:
+                    print('bad generalizing ability')
+                    dtr = -1
+                else:
+                    print('bad model')
+                    dtr = 0
+            elif MSE_train <= MSE_test and (MSE_test-MSE_train)<MSE_train:#泛化能力尚可
+                if r2_bgd>=0.4: 
+                    print('acceptable model')
+                    dtr = 1
+                else:
+                    print('bad model')
+                    dtr = 0
+        return dtr
+    
+    # first time to determine whether to change model or not
+    print('\n判断目前模型效果')
+    dtr = dt(MSE_train,MSE_test,r2_bgd)
+    
+    def simplfy(degree,dx_tst,dy_tst,rlh,rl_new,tsz):
+        x_new,y_new,x_full,year,y_mean_new,y_std_new = trans(dx_tst,dy_tst,2040,degree)
+        if degree>2:
+            print('简化模型,degree>2，考虑简化模型为2次时间项+相关变量做正则化')
+            degree=2
+            x_new,y_new,x_full,year,y_mean_new,y_std_new = trans(dx_tst,dy_tst,2040,2)  #使用2次次数转化时间项
+            x_new = np.array(pd.concat([rlh,pd.DataFrame(x_new,index=rlh.index)],axis=1))
+            x_full = np.array(pd.concat([rl_new,pd.DataFrame(x_full,index=rl_new.index)],axis=1))
+            av,rv,tht,r2_bgd,MSE_train,MSE_test = best_test(x_new,y_new,degree,tstsz=tsz) # 使用2次时间项次数
+            para_name = name+['intercept']+[str(i+1)+'-times' for i in range(degree)]  ###########################
+            print('parameter names:',para_name)
+            print(tht)
+            print('\n新模型拟合效果')
+            dtr = dt(MSE_train,MSE_test,r2_bgd)
+            y_pred = list(np.dot(x_new,tht))
+            MSE = mean_squared_error(np.float64(y_pred),np.float64(y_new))
+            y_pred = list(np.dot(x_full,tht))
+            y_fnl = [i*y_std_new + y_mean_new for i in y_pred]
+        elif degree==2:
+            print('简化模型,degree=2，考虑简化模型为1次时间项+相关变量做正则化')
+            degree=1
+            x_new,y_new,x_full,year,y_mean_new,y_std_new = trans(dx_tst,dy_tst,2040,1)  #使用1次次数转化时间项
+            x_new = np.array(pd.concat([rlh,pd.DataFrame(x_new,index=rlh.index)],axis=1))
+            x_full = np.array(pd.concat([rl_new,pd.DataFrame(x_full,index=rl_new.index)],axis=1))
+            av,rv,tht,r2_bgd,MSE_train,MSE_test = best_test(x_new,y_new,degree,tstsz=tsz) # 使用1次时间项次数
+            para_name = name+['intercept']+[str(i+1)+'-times' for i in range(degree)]  ###########################
+            print('parameter names:',para_name)
+            print(tht)
+            print('\n新模型拟合效果')
+            dtr = dt(MSE_train,MSE_test,r2_bgd)
+            y_pred = list(np.dot(x_new,tht))
+            MSE = mean_squared_error(np.float64(y_pred),np.float64(y_new))
+            y_pred = list(np.dot(x_full,tht))
+            y_fnl = [i*y_std_new + y_mean_new for i in y_pred]
+        else:
+            print('简化模型,考虑简化模型为相关变量做正则化')
+            degree=0
+            x_new = np.array(rlh)
+            x_full = np.array(rl_new)
+            av,rv,tht,r2_bgd,MSE_train,MSE_test = best_test(x_new,y_new,0,tstsz=tsz) # 不用时间项
+            para_name = name  ###########################
+            print('parameter names:',para_name)
+            print(tht)
+            print('\n新模型拟合效果')
+            dtr = dt(MSE_train,MSE_test,r2_bgd)
+            y_pred = list(np.dot(x_new,tht))
+            MSE = mean_squared_error(np.float64(y_pred),np.float64(y_new))
+            y_pred = list(np.dot(x_full,tht))
+            y_fnl = [i*y_std_new + y_mean_new for i in y_pred]
+        print('新的时间项次数：',degree)
+        return y_fnl, MSE, r2_bgd, av, rv, para_name,tht, MSE_train, MSE_test,dtr,degree
+
+    print('\n重新更新模型')
+    if dtr == -2: # underfitting
+        print('overwritten')
+        print('欠拟合，使用最优时间项+相关变量正则化拟合')
+        degree=deg_bst
+        x_new,y_new,x_full,year,y_mean_new,y_std_new = trans(dx_tst,dy_tst,2040,degree)  #使用最优次数转化时间项+相关变量
+        x_new = np.array(pd.concat([rlh,pd.DataFrame(x_new,index=rlh.index)],axis=1))
+        x_full = np.array(pd.concat([rl_new,pd.DataFrame(x_full,index=rl_new.index)],axis=1))
+        av,rv,tht,r2_bgd,MSE_train,MSE_test = best_test(x_new,y_new,degree,tstsz=tsz) # 使用最优时间项次数
+        para_name = name+['intercept']+[str(i+1)+'-times' for i in range(degree)]  ###########################
+        print('parameter names:',para_name)
+        print(tht)
+        print('\n新模型拟合效果')
+        dtr = dt(MSE_train,MSE_test,r2_bgd)
+        y_pred = list(np.dot(x_new,tht))
+        MSE = mean_squared_error(np.float64(y_pred),np.float64(y_new))
+        y_pred = list(np.dot(x_full,tht))
+        y_fnl = [i*y_std_new + y_mean_new for i in y_pred]
+    elif dtr == 2: # overfitting
+        print('overwritten')
+        print('过拟合，判断目前的时间次数，降时间项的次数，保留相关变量')
+        y_fnl, MSE, r2_bgd, av, rv, para_name,tht, MSE_train, MSE_test,dtr,degree = simplfy(degree,dx_tst,dy_tst,rlh,rl_new,tsz)
+    elif dtr == 0: # bad model
+        print('overwritten')
+        if R2_lr>=0.7 and degree<=3: # 如果线性R>0.7而且3次项以内，直接使用时间项的线性拟合
+            print('差模型，如果3次以内时间项且线性拟合优度高于0.7直接使用时间项线性拟合')
+            av,rv = 0,0
+            tht = para_lr
+            para_name = ['intercept']+[str(i+1)+'-times' for i in range(degree)]  ###########################
+            print('parameter names:',para_name)
+            print(tht)
+            r2_bgd = R2_lr
+            MSE_train,MSE_test = '--','--'
+            y_pred = list(np.dot(x_new0,tht))
+            MSE = mean_squared_error(np.float64(y_pred),np.float64(y_new))
+            y_pred = list(np.dot(x_full0,tht))
+            y_fnl = [i*y_std_new + y_mean_new for i in y_pred]
+        else: # 否则使用时间和相关变量线性拟合
+            if degree<=3 and R2_lr>=0.2: # 如果次数小于等于2，则线性拟合
+                print('差模型，如果3次以内时间项且拟合优度低于0.7大于0.2，使用时间项+相关变量线性拟合')
+                model = linear_model.LinearRegression()
+                model.fit(x_new,y_new)
+                y_pred = model.predict(x_new) #到2020的预测值
+                r2_bgd = r2_score(np.float64(y_pred),np.float64(y_new))
+                MSE = mean_squared_error(np.float64(y_pred),np.float64(y_new))
+                MSE_train,MSE_test = '--','--'
+                av,rv = 0,0
+                tht = model.coef_
+                inter = model.intercept_
+                tht[0]=inter
+                para_name = name+['intercept']+[str(i+1)+'-times' for i in range(degree)]  ###########################
+                print('parameter names:',para_name)
+                print(tht)
+                y_pred = list(np.dot(x_full,tht))
+                y_fnl = [i*y_std_new + y_mean_new for i in y_pred]
+            else: # 否则认为没有合适模型，直接使用历史均值
+                print('差模型，如果3次以上时间项')
+                print('*************upwards are overwritten,直接使用历史平均:')
+                y_fnl = [np.mean(dy_tst) for i in range(len(x_full))] ###
+                MSE = '--'
+                r2_bgd = '--'
+                tht = ['--' for i in range(degree+1+4)]
+                para_name = name+['intercept']+[str(i+1)+'-times' for i in range(degree)]  ###########################
+                print('parameter names:',para_name)
+                print(tht)
+                MSE_train='--'
+                MSE_test='--'
+                rv = 0
+                av = 0
+                dtr = '-0' #历史均值
+    elif dtr == -1: # bad generalizing model 泛化能力差，简化模型
+        if R2_lr>=0.8: # 如果线性拟合R>0.8，不论正则化后R2多少，都直接使用时间项的线性拟合进行正则化
+            print('泛化能力差，线性拟合R2>=0.8，判断目前的时间次数，降时间项的次数，保留相关变量')
+            y_fnl, MSE, r2_bgd, av, rv, para_name,tht, MSE_train, MSE_test,dtr,degree = simplfy(degree,dx_tst,dy_tst,rlh,rl_new,tsz)
+        elif r2_bgd<0.4: # 如果线性拟合R<0.8，但正则化后R2<0.4，则直接使用时间项的线性拟合
+            print('泛化能力差，线性R2<0.8，正则化后<0.4，考虑简化模型为时间项线性模型')
+            x_new,y_new,x_full,year,y_mean_new,y_std_new = trans(dx_tst,dy_tst,2040,degree)
+            model = linear_model.LinearRegression()
+            model.fit(x_new,y_new)
+            y_pred = model.predict(x_new) #到2020的预测值
+            r2_bgd = r2_score(np.float64(y_pred),np.float64(y_new))
+            MSE = mean_squared_error(np.float64(y_pred),np.float64(y_new))
+            MSE_train,MSE_test = '--','--'
+            av,rv = 0,0
+            tht = model.coef_
+            inter = model.intercept_
+            tht[0]=inter
+            para_name = ['intercept']+[str(i+1)+'-times' for i in range(degree)]  ###########################
+            print('parameter names:',para_name)
+            print(tht)
+            y_pred = list(np.dot(x_full,tht))
+            y_fnl = [i*y_std_new + y_mean_new for i in y_pred]
+            dtr =0 #线性拟合
+        else:
+            print('泛化能力差，模型不变')   
+            para_name = name+['intercept']+[str(i+1)+'-times' for i in range(degree)]  ###########################
+            print('parameter names:',para_name)
+            print(tht)
+            y_pred = list(np.dot(x_new,tht))
+            MSE = mean_squared_error(np.float64(y_pred),np.float64(y_new))
+            y_pred = list(np.dot(x_full,tht))
+            y_fnl = [i*y_std_new + y_mean_new for i in y_pred]
+    else: # 可接受的模型
+        print('accept model')
+        para_name = name+['intercept']+[str(i+1)+'-times' for i in range(degree)]  ###########################
+        print('parameter names:',para_name)
+        print(tht)
+        y_pred = list(np.dot(x_new,tht))
+        MSE = mean_squared_error(np.float64(y_pred),np.float64(y_new))
+        y_pred = list(np.dot(x_full,tht))
+        y_fnl = [i*y_std_new + y_mean_new for i in y_pred]
+        
+    print('best parameter (a,r) of EE:',av,rv)
+    print('MSE_train, MSE_test:',MSE_train,MSE_test)
+    print('R2 score:',r2_bgd) 
+    print('model status:',dtr)
+    
+    # 如果满足模型可接受，则需要考虑趋势，使用考虑趋势的成本函数
+    if dtr == 1 and degree<=3:
+        print('\n更新后模型可接受，使用考虑趋势的成本函数进行拟合，更新系数')
+        print('时间项次数',degree)
+        x_new0,y_new0,x_full0,year0,y_mean_new0,y_std_new0 = trans(dx_tst,dy_tst,2040,degree)
+        if degree==0:
+            x_new0 = np.array(rlh)
+            x_full0 = np.array(rl_new)
+        else:
+            x_new0 = np.array(pd.concat([rlh,pd.DataFrame(x_new0,index=rlh.index)],axis=1))
+            x_full0 = np.array(pd.concat([rl_new,pd.DataFrame(x_full0,index=rl_new.index)],axis=1))
+
+        tht0, MSE0, r2_bgd0, y_predict0 = BGD_EE_trend(x_new0,y_new0,degree,1,rv,av)
+        y_pred0 = list(np.dot(x_new0,tht0))
+        MSE0 = mean_squared_error(np.float64(y_pred0),np.float64(y_new0))
+        y_pred0 = list(np.dot(x_full0,tht0))
+        y_fnl0 = [i*y_std_new0 + y_mean_new0 for i in y_pred0]
+    
+        if r2_bgd0<=0.5: # 如果添加了趋势项后，R2太小，就不使用趋势项的成本函数
+            print('添加趋势后模型不可接受，使用原成本函数进行拟合，更新系数')
+            print('此时的时间项次数：',degree)
+            tht, MSE, r2_bgd, y_predict = BGD_EE_trend(x_new0,y_new0,degree,0,rv,av)
+            y_pred = list(np.dot(x_new,tht))
+            MSE = mean_squared_error(np.float64(y_pred),np.float64(y_new))
+            y_pred = list(np.dot(x_full,tht))
+            y_fnl = [i*y_std_new + y_mean_new for i in y_pred]
+        else:
+            tht, MSE, r2_bgd, y_predict = tht0, MSE0, r2_bgd0, y_predict0
+            y_pred = y_pred0
+            y_fnl = y_fnl0 
+            
+    print('best parameter (a,r) of EE:',av,rv)
+    print('MSE_train, MSE_test:',MSE_train,MSE_test)
+    print('the coefficients are:',tht)
+    print('model MSE:',MSE)
+    print('R2 score:',r2_bgd) 
+    print('model status:',dtr)
+    print('y_fnl',y_fnl)
+    print('y_fnl len',len(y_fnl))
+    
+    #最终拟合图
+    plt.plot(dx_tst,dy_tst,'b*',label='real')
+    plt.plot(year,y_fnl,'r*',label='predict')
+    plt.title('fitting plot')
+    plt.xlabel('year')
+    plt.ylabel('target')
+    plt.legend()
+    plt.show()
+    
+    return year, y_fnl, MSE, r2_bgd, av, rv, para_name,tht, MSE_train, MSE_test,dtr
+    
+
+
+
+def results_new(df,rl,dgr,mxl,mxh,ttsz): #time n years, variables m dimention, 规整并产出两个表格
+    dx = df.index
+    name = ['air_passenger','air_freight','ship_passenger','ship_freight','rail_passenger','rail_freight','road_passenger','road_freight','car_ownership','rail_CL','rail_EL','DD','DE','labor','GDP']
+#     name = ['water-V','air-V','water-AL','air-AL','C_rail-L','E_rail-L','C_rail-D','E_rail-D','labor','GDP','hydr_EC','nucl_EC','ther_EC','oth_EC','car_owner']
+
+    y_pred_fnl = []
+    para = []
+    for i in range(len(df.T)):
+        print(name[i])
+        y = df.iloc[:,i].values
+        year,y_pred, MSE, r2, alpha_final, r_final, para_name,theta,MSE_train,MSE_test,dtr = selection(dx,y,rl,dgr,mxl,mxh,ttsz)
+        
+        det_name = ['R2','model','train MSE','test MSE','alpha','r']
+        value_name = list(det_name)+list(para_name)
+        det = [r2,str(dtr),MSE_train,MSE_test,alpha_final, r_final]
+        value = list(det)+list(theta)
+        print(value)
+        print(value_name)
+        table = pd.Series(value,index=list(value_name))
+        para.append(table)
+#         print(para)
+        y_pred_fnl.append(y_pred)
+    
+    para=pd.DataFrame(para,index=name)
+    print(para)
+    y_pred_fnl=pd.DataFrame(np.array(y_pred_fnl).T,index=year,columns=name)
+    print(y_pred_fnl)
+    
+    return y_pred_fnl,para
+
+
+
+y_pred_fnl,para_pred = results_new(df2,y_rl,4,0.7,0.9,0.1) # max degree is 5, the degree settle standard is 0.9,test set size is 0.2
+
+hm = 'E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/'
+
+writer = pd.ExcelWriter(hm+'5_medium_dataset_results.xlsx')
+y_pred_fnl.to_excel(writer,sheet_name='medium_EN')
+
+writer.save()
+writer.close()
+
+para_pred = round(para_pred,4)
+print(para_pred)
+
+
