@@ -1,0 +1,32 @@
+import pandas as pd
+import numpy as np
+import seaborn as sns
+from sklearn import preprocessing
+
+hm = 'E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/'
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+# 数据处理，转置，筛选，热力图判断空值，填充空值及数据切片
+df0 = pd.read_excel(hm+'0_raw_relative_variables_for_program.xlsx')
+df_names = df0.iloc[:,0]
+# print(df_names)
+df0 = df0.iloc[:,1:105]
+# print(np.shape(df0))
+df =  pd.DataFrame(df0.values.T, index=df0.columns, columns=df0.index)
+
+# 缺失数据判断
+# 热力图
+cols = df.columns[:105] # first 30 columns
+colours = ['#000099', '#ffff00'] # specify the colours - yellow is missing. blue is not missing.
+# print(sns.heatmap(df[cols].isnull(), cmap=sns.color_palette(colours)))
+
+# 标准化所有的值
+zscore = preprocessing.StandardScaler()
+zscore = zscore.fit_transform(df0)
+# print(np.shape(zscore))
+z_df =  pd.DataFrame(zscore.T, index=df0.columns, columns=df0.index)
+# print(z_df)
+
+m_zdf = z_df.mean()
+s_zdf = z_df.std()
+val = pd.DataFrame({'mean':z_df.mean().values, 'std':z_df.std().values},index=df_names)
+print(val)
