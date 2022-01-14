@@ -1,0 +1,361 @@
+import pandas as pd
+
+hm = 'E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/'
+
+df1 = pd.read_excel(hm+'2_0_PCA_result.xlsx')
+df1.index = df1.iloc[:,0]
+df1.columns = ['year','saving','labor','other_macro','pop_env_ene']
+df1 = df1.iloc[:,1:] # relative variables
+# print(df1)
+
+# 画指标线型图
+import matplotlib.pyplot as plt
+# print(df1.index,df1.iloc[:,0],df1.iloc[:,0].name)
+# print(len(df1.T))
+def linplot(df):
+    for i in range(len(df.T)):   
+        plt.title(df.iloc[:,i].name)
+        plt.xlabel('year')
+        plt.ylabel('value')
+        plt.plot(df.index,df.iloc[:,i])
+        plt.show()
+# print(linplot(df1))
+
+# # 批量梯度下降 弹性网络
+# # 通过R2确定函数形式（定时间序列需要几次项）； 通过BGD确定theta，成本函数为弹性网络（正则化技术） 通过最小化MSE确定弹性网络的参数alpha和r，并计算测试集的MSE和训练集的MSE 若阶数为1，则不进行正则化处理
+import numpy as np
+from scipy import stats
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+#寻找最优参数
+from sklearn.linear_model import ElasticNet
+from sklearn.linear_model import Ridge
+from sklearn.metrics import r2_score
+from sklearn import linear_model
+
+
+#将时间标准化后转变为n次特征，使用到2040的时间序列, 将y标准化处理
+def trans(dx,dy,n,deg): #dx:current time series, y: current y value, n:target year, deg:transform to polynomial
+    bs = np.min(list(dx))
+    lgth = len(dx)  # 实际使用的训练年份年数
+    year = np.array(range(bs,n+1))
+#     print(lgth)
+    poly_scaler = Pipeline([
+                ('std_scaler',StandardScaler()),
+                ('poly_features',PolynomialFeatures(degree=deg,include_bias=True))
+            ])
+    scaler = StandardScaler()
+
+    x=poly_scaler.fit_transform(year.reshape(-1,1))
+    x = pd.DataFrame(list(map(list,x)))
+    x.loc[:,0]=1
+    x = np.array(x)
+    xt = x[:lgth]
+
+    yt=scaler.fit_transform(np.array(dy).reshape(-1,1)).reshape(1,-1)[0]
+    y_mean = np.mean(dy)
+    y_std = np.std(dy)
+    
+    return xt,yt,x,year,y_mean,y_std
+# xt 为历史有y的n维时间特征，yt为目标变量,x为包括到预测年份的所有n维时间特征，
+# year为到预测年份的所有年份，y_mean和y_std室为了将预测y去标准化
+
+
+# 确定时间特征的阶数，直接拟合的方式，不考虑正则化技术，看几阶函数R2最大，则对这个y使用几阶时间特征
+def bstdg(dx,dy,n=5,mxl=0.6,mxh=0.9):
+    deg = [i for i in range(1,n+1)]
+    model = linear_model.LinearRegression()
+    R = []
+    M=[]
+    for i in deg:
+        x1_t,y1_t,x_t,year_t,y_mean_t,y_std_t = trans(dx,dy,2040,i)
+        model.fit(x1_t,y1_t)
+        y_pred = model.predict(x1_t)
+        R.append(r2_score(np.float64(y_pred),np.float64(y1_t)))
+        M.append(mean_squared_error(np.float64(y_pred),np.float64(y1_t)))
+
+    # 选择合适的时间次数，使用第一个使得函数拟合达到mxl以上的项数，认为是比较合适的时间项数，若在最大项数约束下仍未达到标准，则使用2次
+    for i in R:
+        if i >=mxl:
+            deg_fn = R.index(i)+1
+            break
+        else:
+            deg_fn = 2
+    print('suitable degree:',deg_fn)
+    # 选择最优的时间次数，可能是过拟合的情况，如果到mxh以上，选用这个次数，否则使用最大项数约束
+    for i in R:
+        if i>=mxh:
+            deg_bst = R.index(i)+1
+        else:
+            deg_bst = n
+    print('best degree:',deg_bst)
+    
+    R2 = R[deg_fn-1]
+    MSE = M[deg_fn-1]
+    print('suitable R2 in degree selection:',R2)
+    print('suitable MSE in degree selection:',MSE)
+    
+    x1_t,y1_t,x_t,year_t,y_mean_t,y_std_t = trans(dx,dy,2040,deg_fn)
+    model.fit(x1_t,y1_t)
+    y_pred = model.predict(x_t)*y_std_t+y_mean_t
+    para = model.coef_
+    inter = model.intercept_
+    para[0]=inter
+    
+    return y_pred,para,R2,year_t,MSE,deg_fn,deg_bst
+
+
+
+# 批量梯度下降求解弹性网络的参数,梯度下降寻找全局最优成本函数，成本函数为弹性网络成本函数
+def BGD_EE(input_data,target_data,r,alp): #sut_d 为使用的时间项次数, trend=0时使用一般的权重，否则使用趋势权重
+    loop_max = 10000 #最大迭代次数
+    epsilon = 1e-4  #容差
+    alpha = 0.001 #步长
+
+    m = len(input_data) #实例个数
+    n = len(input_data.T) #特征个数,包括截距
+    np.random.seed(0)
+    theta = np.random.randn(n) # 随机化初始权重，就是每个特征的系数
+
+    diff=0
+    error=np.zeros(n)
+    count=0
+    finish=0
+
+    w = np.array([1 for i in range(1,len(target_data)+1)]).reshape(-1,1)
+    
+    while count<loop_max:  #迭代循环
+        count +=1
+        # cost function, we need the diffentiated cost function
+        e = np.array(input_data.dot(theta)-target_data).reshape(-1,1)
+        func = lambda x,y:x*y
+        ms1 = list(map(list,list(map(func,w,e))))
+        ms = list(np.array((2/m)*input_data.T.dot(ms1)).flatten())
+
+        ab = []
+        for i in range(len(theta)): #系数的正负号
+            if theta[i]>=0:
+                ab.append(1*alp*r)
+            else:
+                ab.append(-1*alp*r)
+        pw = [x*alp*(1-r) for x in theta]
+
+        func2 = lambda a,b,c:a+b+c
+        v = np.array(list(map(func2,ms,ab,pw)))
+
+        theta = theta-alpha*v
+        ep=np.linalg.norm(theta-error)  
+
+        if ep<epsilon:
+            finish=1
+            break
+        else: 
+            error = theta 
+#             finish=0  
+        
+    y_predict = np.dot(input_data,theta)
+    MSE = mean_squared_error(y_predict,target_data)
+    R2 = r2_score(np.float64(y_predict),np.float64(target_data))
+
+    return list(theta), MSE, R2, y_predict
+
+
+# # find the best alpha and r for BGD_EE model， 输出alpha,r,training MSE,test MSE
+def best_test(x_bt,y_bt,tstsz=0.1):#设置testsize, sut_d用于做判断，没有设计计算，可为0
+
+    ##粗粒度筛选
+    inter = 0.2
+    alpha = np.arange(inter,1+inter,inter)
+    r = np.arange(0,1+inter,inter)
+
+    v = []
+    loc = []
+    av,rv,R=[],[],[]
+    for i in range(len(alpha)):
+        for j in range(len(r)):
+            rl = round(float(r[j]),3)
+            al = round(float(alpha[i]),3)
+            av.append(al)
+            rv.append(rl)
+            theta, MSE, R2, y_predict = BGD_EE(x_bt,y_bt,r=rl,alp=al) # trend=0 使用一般的成本函数
+            R.append(R2)
+            loc.append([i,j])
+    
+    ind = int(R.index(max(R)))
+    abst = loc[ind][0]
+    rbst = loc[ind][1]
+#     print('best location of a and r',abst,rbst)
+    abstv = round(float(alpha[abst]),3)
+    rbstv = round(float(r[rbst]),3)
+
+    #得到细粒度的列表
+    inter2=0.05
+    func = lambda a:round(float(a),2)
+    if abstv==round(min(alpha),2):
+        avmx = round(float(alpha[abst+1]),3)
+        alpha2 = list(map(func,np.arange(inter2,avmx,inter2)))
+#         print('min',alpha2)
+    elif abstv==round(max(alpha),2):
+        avmi = round(float(alpha[abst-1]),3)
+        alpha2 = list(map(func,np.arange(avmi,abstv,inter2)))
+#         print('max',alpha2)
+    else:
+        avmi = round(float(alpha[abst-1]),3)
+        avmx = round(float(alpha[abst+1]),3)
+        alpha2 = list(map(func,np.arange(avmi,1+inter2,inter2)))
+#         print('mid',alpha2)
+
+    if rbstv==round(min(r),2):
+        rvmx = round(float(r[rbst+1]),3)
+        r2 = list(map(func,np.arange(inter2,rvmx,inter2)))
+#         print('min',r2)
+    elif rbstv==round(max(r),2):
+        rvmi = round(float(r[rbst-1]),3)
+        r2 = list(map(func,np.arange(rvmi,1+inter2,inter2)))
+#         print('max',r2)
+    else:
+        rvmi = round(float(r[rbst-1]),2)
+        rvmx = round(float(r[rbst+1]),2)
+        r2 = list(map(func,np.arange(rvmi,rvmx,inter2)))
+#         print('mid',r2)  
+    
+    v = []
+    loc = []
+    av,rv,R,tht=[],[],[],[]
+    for i in range(len(alpha2)):
+        for j in range(len(r2)):
+            rl = round(float(r2[j]),3)
+            al = round(float(alpha2[i]),3)
+            av.append(al)
+            rv.append(rl)
+            theta, MSE, R2, y_predict = BGD_EE(x_bt,y_bt,r=rl,alp=al) #使用一般的成本函数
+            R.append(R2)
+            tht.append(theta)
+            loc.append([i,j])
+
+    ind = int(R.index(max(R)))
+    av = alpha2[loc[ind][0]]
+    rv = r2[loc[ind][1]]
+    r2_fn = R[ind]
+    print('suitable R2 in a&r selection:',r2_fn)
+    tht = tht[ind:ind+1][0]
+    
+    # 测试集和训练集
+    x_train,x_val,y_train,y_val = train_test_split(x_bt,y_bt,test_size=tstsz)
+    theta, MSE_train, R2, y_predict = BGD_EE(x_train,y_train,rv,av) #使用一般的成本函数
+    MSE_test = mean_squared_error(np.dot(x_val,np.array(theta).T),y_val)
+    
+    return av,rv,tht,r2_fn,MSE_train,MSE_test
+
+
+
+#学习曲线判断拟合
+def lncv(x,y):
+    train_errors, val_errors = [],[]
+    for m in range(1, len(x)):
+        tst = (len(x)-m)/len(x)
+        av,rv,cv,MSE = best_test(x,y,tstsz=tst)
+        train_errors.append(cv)
+        val_errors.append(MSE)
+
+    plt.plot(np.sqrt(train_errors),'b-+',linewidth=2,label='train')
+    plt.plot(np.sqrt(val_errors),'r-+',linewidth=3,label='val')
+    plt.title('learning curve')
+    plt.xlabel('train size')
+    plt.ylabel('RMSE')
+    plt.legend()
+    plt.show()
+
+
+
+# # 函数集合，最后一步导出结果和预测值
+def rst_fnl(dx,y,dgr,mxl,mxh,ttsz): #dgr degree of time, mx make sure the best degree makes R2>mx, ttsz test size of EE model
+    # determine the degree of time character
+#     degree,y_pred_og,para_og,R2,year_t,MSE_t = bstdg(dx,y,n=dgr,max=mx)
+    y_pred,para,R2,year_t,MSE,degree,deg_bst = bstdg(dx,y,dgr,mxl,mxh)
+    
+    if degree!=1:
+        # n dimention of time character
+        x_new,y_new,x_full,year,y_mean_new,y_std_new = trans(dx,y,2040,degree)
+        # test set size
+#         av,rv,MSE_train,MSE_test = best_test(x_new,y_new,tstsz=ttsz)
+        av,rv,tht,r2_fn,MSE_train,MSE_test = best_test(x_new,y_new,tstsz=ttsz)
+        print('best parameter (a,r) of EE:',av,rv)
+        print('MSE_train, MSE_test:',MSE_train,MSE_test)
+
+#         theta, MSE, R2, y_predict = BGD_EE(x_new,y_new,rv,av)
+        print('BGE_EE results:')
+#         print('the coefficients are:',theta)
+#         print('final MSE:',MSE)
+#         print('R2 score:',r,R2,)
+        print('the coefficients are:',tht)
+        MSE = mean_squared_error(np.dot(x_new,tht),y_new)
+        print('final MSE:',MSE)
+        r = r2_fn
+        print('R2 score:',r)
+
+        y_pred = list(np.dot(x_full,tht))
+        y_fnl = [i*y_std_new + y_mean_new for i in y_pred]
+        
+    else:
+        year=year_t
+        y_fnl=y_pred 
+        MSE=MSE
+        MSE_train='-'
+        MSE_test='-'
+        r=R2
+        av=0
+        rv=0
+        tht=para
+
+    #最终拟合图
+    plt.plot(dx,y,'b*',label='real')
+    plt.plot(year,y_fnl,'r*',label='predict')
+    plt.title('fitting plot')
+    plt.xlabel('year')
+    plt.ylabel('target')
+    plt.legend()
+    plt.show()
+    
+    return year, y_fnl, MSE, r, av, rv, tht, MSE_train, MSE_test
+
+
+
+def results(df_1,dgr,mxl,mxh,ttsz): #time n years, variables m dimention, 规整并产出两个表格
+    dx = df_1.index
+    name = df_1.columns
+    print(name)
+
+    y_pred_fnl = []
+    para = []
+    for i in range(len(df_1.T)):
+        y = df_1.iloc[:,i].values
+        year,y_pred, MSE, r2, alpha_final, r_final, theta, MSE_train,MSE_test = rst_fnl(dx,y,dgr,mxl,mxh,ttsz)
+
+        para0 = [MSE,MSE_train,MSE_test,r2,alpha_final,r_final]
+        for j in range(len(theta)):
+            para0.append(theta[j])
+        para.append(para0)
+        y_pred_fnl.append(y_pred)
+
+
+    y_pred_fnl= pd.DataFrame(np.array(y_pred_fnl).T,index=year,columns=name)
+    print(y_pred_fnl)
+
+    para_name=['MSE','MSE_train','MSE_test','R2','alpha','r','intercept']
+    coe_name=[str(i)+'-times' for i in range(1,len(pd.DataFrame(para).T)-len(para_name)+1)]
+    para_name_fn=para_name+coe_name
+    para_pred = pd.DataFrame(para,columns=para_name+coe_name)
+    print(para_pred)
+    
+    return y_pred_fnl,para_pred
+    
+    
+## only use time as feature to predict relative variables
+y_pred_fnl,para_pred = results(df1,5,0.9,0.95,0.1) # max degree is 5, the degree settle standard is 0.9,test set size is 0.2
+
+
