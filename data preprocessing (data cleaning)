@@ -1,0 +1,63 @@
+import pandas as pd
+from scipy.interpolate import interp1d
+
+hm = 'E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/'
+
+# df1 = pd.read_excel(hm+'3_0_raw_target_variables.xlsx')
+# df1=pd.read_excel(hm+'3_0_raw_target1.xlsx')
+df1=pd.read_excel(hm+'3_shares_calc_original.xlsx',sheet_name='medium')
+df1.index = df1.iloc[:,0]
+df1 = df1.iloc[:,1:]
+year = list(df1.index)
+longdata = df1.iloc[year.index(1970):year.index(2020)+1,:]
+
+df0 = pd.read_excel(hm+'3_shares_calc_original.xlsx', sheet_name='pub')
+df0.index = df0.iloc[:,0]
+df0 = df0.iloc[:,1:]
+# print(df0)
+
+df01 = pd.read_excel(hm+'3_shares_calc_original.xlsx', sheet_name='new')
+df01.index = df01.iloc[:,0]
+df01 = df01.iloc[:,1:]
+print(df01)
+
+# 插值处理
+def polate(lst):
+#     print(lst.iloc[:,2].isnull())
+    name = list(lst.columns)
+    print(name)
+    for i in range(len(name)):
+        if list(lst[name[i]].isnull()).count(True)!=0:
+            value = lst[lst[name[i]].notnull()].iloc[:,i]
+            target = lst[lst[name[i]].isnull()].iloc[:,i]
+#             print(value,target)
+            x,y = list(map(int,value.index)),list(value.values) #使用有值的部分训练插值函数
+            f = interp1d(x,y,kind='linear', fill_value='extrapolate') 
+            xnew1 = pd.Series(list(map(int,target.index)),name='year')
+            ynew1 = list(map(int,list(f(xnew1))))
+            new = pd.DataFrame(ynew1,index=xnew1)
+            new = pd.concat([value,new],axis=0)
+            new = new.sort_index(ascending=True)
+#             print(new)
+            
+            lst[name[i]]=new.values
+#     print(lst)
+    return lst
+
+writer = pd.ExcelWriter(hm+'4_interpolate_dataset.xlsx')
+
+ldnew = polate(longdata)
+print(ldnew)
+ldnew.to_excel(writer,sheet_name='medium0')
+
+short1 = polate(df0)
+print(short1)
+short1.to_excel(writer,sheet_name='pub')
+
+short2 = polate(df01)
+print(short2)
+short2.to_excel(writer,sheet_name='new')
+
+writer.save()
+writer.close()
+    
