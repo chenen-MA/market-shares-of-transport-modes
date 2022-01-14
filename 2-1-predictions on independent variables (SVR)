@@ -1,0 +1,170 @@
+import pandas as pd
+
+hm = 'E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/'
+
+df1 = pd.read_excel(hm+'2_PCA_result.xlsx')
+df1.index = df1.iloc[:,0]
+df1.columns = ['year','saving','labor','other_macro','pop_env_ene']
+df1 = df1.iloc[:,1:] # relative variables
+# print(df1)
+
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVR
+from sklearn.model_selection import GridSearchCV
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import r2_score
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
+
+
+def SVR_model(dx,dy,n,m):
+    bs = np.min(list(dx))
+    lgth = len(dx)  # 实际使用的训练年份年数
+    year = np.array(range(bs,m+1)) #到2040
+
+    poly_scaler = Pipeline([
+                    ('std_scaler',StandardScaler()),
+                    ('poly_features',PolynomialFeatures(degree=n,include_bias=True))
+                ])
+    scaler = StandardScaler()
+    x_full = poly_scaler.fit_transform(np.array(year).reshape(-1,1)) #输入特征只有时间特征，因此使用多项式方式的核函数；
+    x_full = np.array(x_full)
+    x = x_full[:lgth]
+
+    y = scaler.fit_transform(np.array(dy).reshape(-1,1)).reshape(1,-1)[0]
+    y_mean = np.mean(dy)
+    y_std = np.std(dy)
+    # print(x)
+    # print(dy)
+
+    # 测试集和训练集
+    x_train,x_val,y_train,y_val = train_test_split(x,y,test_size=0.1)
+
+#     gamma = [0.001,0.01,0.1,1,10,100]
+#     C = [0.001,0.01,0.1,1,10,100]
+    gamma = np.logspace(-7,7,30,base=2)
+    C = np.logspace(-7,7,30 ,base=2)
+#     met = ['linear','poly', 'rbf']
+    met = ['linear']
+    print(gamma)
+    print(C)
+    print(met)
+
+    # 对SVR的各参数筛选，记录R2，测试和验证的MSE，以及各参数值
+    loc,R,MSE_tr,MSE_tst =[],[],[],[]
+    for m in met:
+        for g in gamma:
+            for c in C:
+                # 测试集与验证集计算
+                svr = SVR(kernel=m, C=c, gamma=g) 
+                svr.fit(x_train,y_train)
+                y_pred = svr.predict(x_train)
+                MSE_train = mean_squared_error(y_pred,y_train)
+                y_pred = svr.predict(x_val)
+                MSE_test = mean_squared_error(y_pred,y_val)
+                MSE_tr.append(MSE_train)
+                MSE_tst.append(MSE_test)
+
+                svr = SVR(kernel=m, C=c, gamma=g) 
+                svr.fit(x,y)
+                #C表征你有多么重视离群点，C越大越重视；gamma是核系数且gamma的值必须大于0
+                y_pred = svr.predict(x)
+                loc.append([m,c,g])
+                R.append(r2_score(y_pred,y))
+    
+    print('参数选择结束')
+    
+    # 计算train-test
+    func = lambda a,b:a-b
+    tmt = list(map(func,MSE_tr,MSE_tst))
+    print('R values:',R)
+    print('gap between train and test:',tmt)
+
+    # 记录满足条件的R和测试验证差值的绝对值，并记录满足条件记录在原列表的位置
+    R_new,i_new,abmn = [],[],[]
+    for i in range(len(tmt)):
+        if 0.6<=R[i]<=0.97 and -MSE_tr[i]<=tmt[i]<=MSE_tst[i]:
+            i_new.append(i)
+            R_new.append(R[i])
+            abmn.append(abs(tmt[i]))
+    
+    print('gap-R',abmn)
+    print('suitable Rs:',R_new)
+    # 计算abs(MSE_train-MSE_test)-R2, 找到最小值对应的坐标
+    ab_R = list(map(func,abmn,R_new))
+#     print(ab_R)
+    ind = int(ab_R.index(min(ab_R)))
+    # 使用此坐标找到原列表的坐标
+    ind_fn = i_new[ind]
+    # 使用找到的坐标，定位SVR 的参数
+    mbst = loc[ind_fn][0]
+    cbst = loc[ind_fn][1]
+    gbst = loc[ind_fn][2]
+    R2 = R[ind_fn]
+    MSE_train = MSE_tr[ind_fn]
+    MSE_test = MSE_tst[ind_fn]
+    print('parameters：',mbst,cbst,gbst)
+    print('R2:',R2)
+    print(MSE_tr[ind_fn],MSE_tst[ind_fn])
+
+    # 使用找到的最佳参数预测
+    svr = SVR(kernel=mbst, C=cbst, gamma=gbst) 
+    svr.fit(x,y)
+    y_pred = svr.predict(x_full)
+    y_pred = [i*y_std+y_mean for i in y_pred]
+    #最终拟合图
+    plt.plot(dx,dy,'b*',label='real')
+    plt.plot(year,y_pred,'r*',label='predict')
+    plt.title('fitting plot')
+    plt.xlabel('year')
+    plt.ylabel('target')
+    # plt.legend()
+    plt.show()
+    
+    return year,y_pred,R2,MSE_train,MSE_test,mbst,cbst,gbst
+
+
+
+def results_SVR(df1): #time n years, variables m dimention, 规整并产出两个表格
+    dx = df1.index
+    name = df1.columns
+    print(name)
+
+    y_pred_fnl = []
+    para = []
+    for i in range(len(df1.T)):
+        y = df1.iloc[:,i].values
+        year,y_pred,R2,MSE_train,MSE_test,mbst,cbst,gbst = SVR_model(dx,y,2,2040)
+
+        para0 = [R2,MSE_train,MSE_test,mbst,cbst,gbst]
+        para.append(para0)
+        y_pred_fnl.append(y_pred)
+
+    y_pred_fnl= pd.DataFrame(np.array(y_pred_fnl).T,index=year,columns=name)
+    print(y_pred_fnl)
+
+    para_name=['R2','MSE_train','MSE_test','kernal','C','gamma']
+    para_pred = pd.DataFrame(para,index=list(name),columns=para_name)
+    print(para_pred)
+    
+    return y_pred_fnl,para_pred
+
+
+
+y_pred_fnl2,para_pred2 = results_SVR(df1) # max degree is 5, the degree settle standard is 0.9,test set size is 0.2
+
+y_pred_fnl2.to_excel(writer,sheet_name='SVR')
+
+para_pred2.index=df1.columns
+
+for i in range(len(para_pred2.columns)):
+    for j in range(len(para_pred2.index)):
+        if isinstance(para_pred2.iloc[j,i],str):
+            para_pred2.iloc[j,i] = para_pred2.iloc[j,i]
+        else:
+            para_pred2.iloc[j,i] = round(para_pred2.iloc[j,i],3)
+
+print(para_pred2)
