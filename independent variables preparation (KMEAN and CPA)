@@ -3,6 +3,13 @@ import numpy as np
 import seaborn as sns
 from sklearn import preprocessing
 
+from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
+
+from scipy.interpolate import interp1d
+from sklearn.decomposition import PCA
+
+
 hm = 'E:/东工课程/MasterFinalThesis/thesisProgress/content/FINAL_VERSION_PROCESS/model_data_pipeline/'
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
 # 数据处理，转置，筛选，热力图判断空值，填充空值及数据切片
@@ -18,15 +25,178 @@ df =  pd.DataFrame(df0.values.T, index=df0.columns, columns=df0.index)
 cols = df.columns[:105] # first 30 columns
 colours = ['#000099', '#ffff00'] # specify the colours - yellow is missing. blue is not missing.
 # print(sns.heatmap(df[cols].isnull(), cmap=sns.color_palette(colours)))
-
 # 标准化所有的值
 zscore = preprocessing.StandardScaler()
 zscore = zscore.fit_transform(df0)
 # print(np.shape(zscore))
 z_df =  pd.DataFrame(zscore.T, index=df0.columns, columns=df0.index)
 # print(z_df)
-
 m_zdf = z_df.mean()
 s_zdf = z_df.std()
 val = pd.DataFrame({'mean':z_df.mean().values, 'std':z_df.std().values},index=df_names)
 print(val)
+
+# Kmeans 并导出到excel
+k=4
+kmeans=KMeans(n_clusters=k)
+y_pred = pd.Series(kmeans.fit_predict(val),name='label',index=df_names)
+df_new =  pd.DataFrame(df0.values, index=df_names, columns=df0.columns)
+print(y_pred)
+plt.scatter(val['mean'],val['std'], s=250,c=y_pred,alpha=0.4)
+plt.xlabel('mean')
+plt.ylabel('variance')
+df_new = df_new.join(y_pred)
+# print(df_new)
+df_new.to_excel(hm+'1_catagories.xlsx')
+
+# 主成分分析选出需要降维的变量
+# print(df_new)
+tab = df_new.groupby(['label']).count().T.max()
+# print(tab)
+tab0 = [i for i in range(len(tab)) if tab[i]>1]
+tab1 = [i for i in range(len(tab)) if tab[i]<=1]
+# print(tab0)
+# 不需要降维
+TV = df_new[df_new['label'].isin(tab1)]
+print(type(TV))
+# 需要降维
+TV0 = df_new[df_new['label']==tab0[0]]
+TV1 = df_new[df_new['label']==tab0[1]]
+
+# 对于不需要降维的变量：
+from scipy.interpolate import interp1d
+
+# 对于不需要降维的变量：
+#截取不全为空的列
+lst = [i for i in range(1960,2021)]
+# print(lst)
+for i in range(len(lst)):
+    if TV[str(lst[i])].isnull().all():
+        j=i
+        x=lst[i]
+x,j=x+1,j+1
+TV_new=TV.iloc[:,j:len(lst)].T
+# print(TV_new)
+# 对存在空值的变量线性插值
+y = list(TV_new['总储蓄（现价本币）'][4:42].values)
+x = list(map(int,TV_new.index[4:42]))
+f = interp1d(x,y,fill_value='extrapolate') 
+xnew1 = list(range(1978,1982))
+ynew1 = list(f(xnew1))
+xnew2 = [2020]
+ynew2 = list(f(xnew2))
+xnew = xnew1+xnew2
+ynew = ynew1+ynew2
+new = pd.DataFrame([xnew,ynew],index=['year','value']).T
+# print(new)
+for i in range(len(TV_new.index)):
+    j=int(TV_new.index[i])
+    if j in xnew:
+#         print(TV_new['总储蓄（现价本币）'][i])
+#         print(new[new['year']==j]['value'].values)
+        TV_new['总储蓄（现价本币）'][i]=int(new[new['year']==j]['value'].values)
+# print(TV_new)
+
+# 需要降维的变量1  GDP,GNI,EXP综合指标
+lst = list(map(int,list(TV1.T.index)[0:-1]))
+TV1_new=TV1.T.iloc[0:len(lst),:]
+# print(TV1_new)
+# 对存在空值的变量线性插值
+y = list(map(list,TV1_new.T.values[:,:-1]))
+x = lst[:-1]
+f = interp1d(x,y,fill_value='extrapolate') 
+xnew = [2020]
+ynew = list(map(int,list(f(xnew))))
+new = pd.DataFrame( xnew+ynew,index=['year','GDP','GNI','EXP']).T
+# print(new.iloc[:,1:4].values)
+TV1_new.iloc[-1]=new.iloc[:,1:4].values
+# print(TV1_new)
+# 对插值后的数据主成分分析
+pca =PCA(n_components=0.99)
+TV1_reduce = pca.fit_transform(TV1_new)
+print(np.shape(TV1_reduce)) #宏观经济指标GDP,GNI,EXP的综合指标
+TV1_reduce = list(map(int,list(TV1_reduce)))
+TV1_reduce = pd.Series(TV1_reduce,index=TV1_new.index,name='micro_eco')
+# print(TV1_reduce)
+
+# 需要降维的变量2 其他100个宏观经济指标
+TV0_new=TV0.T.iloc[0:len(lst),:]
+TV0_new=TV0_new.T
+# print(TV0_new)
+#某年所有变量的空值率
+rate = []
+for i in range(len(list(TV0_new.columns))):
+    val = list(TV0_new.iloc[:,i].isnull().values).count(True)
+    rate.append(round(val/len(TV0_new.index),2))
+# print(rate)
+year = list(map(int,list(TV0_new.columns)))
+# print(len(year))
+sav_year = []
+for i in range(len(rate)):
+    if rate[i]<=0.6:
+        sav_year.append(year[i])
+# print(min(sav_year),max(sav_year))
+for i in range(len(year)):
+    if int(year[i])==min(sav_year):
+        mi=i
+    if int(year[i])==max(sav_year):
+        ma=i
+# print(mi,ma)
+TV0_new = TV0_new.iloc[:,mi:ma+1].T
+# print(TV0_new)
+# 对存在空值的变量线性插值
+#某变量所有年份的空值率
+rate = []
+for i in range(len(list(TV0_new.columns))):
+    val = list(TV0_new.iloc[:,i].isnull().values).count(True)
+    rate.append(round(val/len(TV0_new.index),2))
+name = list(TV0_new.columns)
+# print(rate,name)
+# print(len(rate),len(name))
+sav_name = []
+for i in range(len(rate)):
+    if rate[i]<=0.20:
+        sav_name.append(name[i])
+# print(len(sav_name))
+# print(sav_name)
+TV0_new = TV0_new[sav_name]
+# print(TV0_new)
+
+# 插值处理
+# print(TV0_new.iloc[:,2].isnull())
+name = list(TV0_new.columns)
+for i in range(len(name)):
+    if list(TV0_new[name[i]].isnull()).count(True)!=0:
+        value = TV0_new[TV0_new[name[i]].notnull()].iloc[:,i]
+        target = TV0_new[TV0_new[name[i]].isnull()].iloc[:,i]
+        x,y = list(map(int,value.index)),list(value.values)
+        f = interp1d(x,y,fill_value='extrapolate') 
+        xnew1 = list(map(int,target.index))
+        ynew1 = list(map(int,list(f(xnew1))))
+        
+        xnew = x+xnew1
+        ynew = y+ynew1
+        new = pd.DataFrame(ynew,index=xnew).sort_index()
+        TV0_new[name[i]]=new.values
+
+# print(TV0_new)
+# 对插值后的数据主成分分析
+pca =PCA(n_components=0.99)
+TV0_reduce = pca.fit_transform(TV0_new)
+# print(np.shape(TV0_reduce)) #其他经济指标人口、环境、能源等
+TV0_reduce = list(map(int,list(TV0_reduce)))
+TV0_reduce = pd.Series(TV0_reduce,index=TV0_new.index, name='pop_env_ene')
+# print(TV0_reduce)
+x,y = list(map(int,TV0_reduce.index)),list(TV0_reduce.values)
+# print(x,y)
+f = interp1d(x,y,fill_value='extrapolate') 
+xnew = [2020]
+ynew = f(xnew)
+new = pd.Series(ynew,index=xnew,name='pop_env_ene')
+# TV0_reduce = pd.Series(TV0_reduce.append(new),name='pop_env_ene')
+TV0_reduce = TV0_reduce.append(new)
+print(TV0_reduce)
+
+TV_pca = TV_new.join(TV1_reduce).join(TV0_reduce)
+TV_pca['pop_env_ene'][-1]=new.values
+TV_pca.to_excel(hm+'2_PCA_result.xlsx')
